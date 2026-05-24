@@ -1,10 +1,15 @@
 import UserAvatar from "@/components/layout/user-avatar";
 import { performLogout } from "@/lib/logout";
 import type { AppDispatch, RootState } from "@/store";
+import Link from "next/link";
 import { useRouter } from "next/router";
 import { useDispatch, useSelector } from "react-redux";
 
-const menuItems = ["Dashboard", "Devices", "Account"];
+const menuItems = [
+  { label: "Dashboard", href: "/" },
+  { label: "Devices", href: "/devices" },
+  { label: "Account", href: "/account" },
+];
 
 export default function Sidebar() {
   const router = useRouter();
@@ -32,19 +37,25 @@ export default function Sidebar() {
           Main Menu
         </p>
         <nav className="space-y-2">
-          {menuItems.map((item, index) => (
-            <button
-              key={item}
-              type="button"
-              className={`w-full rounded-xl px-4 py-2.5 text-left text-sm font-medium transition ${
-                index === 0
-                  ? "bg-slate-900 text-white shadow-lg shadow-slate-300/50"
-                  : "text-slate-700 hover:bg-slate-100"
-              }`}
-            >
-              {item}
-            </button>
-          ))}
+          {menuItems.map((item) => {
+            const isActive =
+              item.href === "/"
+                ? router.pathname === "/"
+                : router.pathname === item.href || router.pathname.startsWith(`${item.href}/`);
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                className={`block w-full rounded-xl px-4 py-2.5 text-left text-sm font-medium transition ${
+                  isActive
+                    ? "bg-slate-900 text-white shadow-lg shadow-slate-300/50"
+                    : "text-slate-700 hover:bg-slate-100"
+                }`}
+              >
+                {item.label}
+              </Link>
+            );
+          })}
         </nav>
       </div>
 

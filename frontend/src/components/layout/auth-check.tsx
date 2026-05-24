@@ -1,6 +1,7 @@
 import { AuthLogin } from "@/store/auth-slice";
 import { AuthToken } from "@/utils/auth";
 import { axiosInstance } from "@/utils/axios-instance";
+import { RealtimeProvider } from "@/lib/realtime";
 import { useRouter } from "next/router";
 import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
@@ -57,5 +58,5 @@ export default function AuthCheck({ children }: AuthCheckProps) {
     );
   }
 
-  return <>{children}</>;
+  return <RealtimeProvider>{children}</RealtimeProvider>;
 }

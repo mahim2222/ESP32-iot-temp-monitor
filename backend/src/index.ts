@@ -1,8 +1,13 @@
 import "dotenv/config";
+import http from "http";
+import { URL } from "url";
 import cors from "cors";
 import express, { type Request, type Response } from "express";
 import { connectDatabase } from "./config/database";
 import authRouter from "./routers/auth.router";
+import devicesRouter from "./routers/device.router";
+import { createAppWss } from "./realtime/app-ws";
+import { createDeviceWss } from "./realtime/device-ws";
 
 const app = express();
 const PORT = Number(process.env.PORT) || 4000;
@@ -22,6 +27,7 @@ app.get("/", (_req: Request, res: Response) => {
 });
 
 app.use("/api/auth", authRouter);
+app.use("/api/devices", devicesRouter);
 
 async function bootstrap(): Promise<void> {
   if (!process.env.JWT_SECRET) {
@@ -30,8 +36,32 @@ async function bootstrap(): Promise<void> {
   }
 
   await connectDatabase();
-  app.listen(PORT, () => {
+
+  const server = http.createServer(app);
+  const deviceWs = createDeviceWss();
+  const appWs = createAppWss();
+
+  server.on("upgrade", (req, socket, head) => {
+    let pathname: string;
+    try {
+      pathname = new URL(req.url ?? "/", "http://localhost").pathname;
+    } catch {
+      socket.destroy();
+      return;
+    }
+    if (pathname === "/socket") {
+      deviceWs.handleUpgrade(req, socket, head);
+    } else if (pathname === "/app") {
+      appWs.handleUpgrade(req, socket, head);
+    } else {
+      socket.destroy();
+    }
+  });
+
+  server.listen(PORT, () => {
     console.log(`Server is running at http://localhost:${PORT}`);
+    console.log(`Device WS: ws://localhost:${PORT}/socket?token=<deviceToken>`);
+    console.log(`App WS:    ws://localhost:${PORT}/app?token=<userJwt>`);
   });
 }
 
