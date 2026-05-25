@@ -3,12 +3,21 @@ import mongoose from "mongoose";
 export const DEVICE_SENSORS = ["DHT11"] as const;
 export type DeviceSensor = (typeof DEVICE_SENSORS)[number];
 
+export const DATA_TRANSFER_STATES = ["start", "stop"] as const;
+export type DataTransferState = (typeof DATA_TRANSFER_STATES)[number];
+
+export const DEFAULT_DELAY_MS = 3_000;
+export const MIN_DELAY_MS = 3_000;
+export const MAX_DELAY_MS = 2 * 60 * 60 * 1000;
+
 export interface IDevice {
   userId: mongoose.Types.ObjectId;
   name: string;
   username: string;
   sensor: DeviceSensor;
   token: string;
+  delay_ms: number;
+  data_transfer: DataTransferState;
 }
 
 const deviceSchema = new mongoose.Schema<IDevice>(
@@ -33,6 +42,19 @@ const deviceSchema = new mongoose.Schema<IDevice>(
       enum: DEVICE_SENSORS,
     },
     token: { type: String, required: true, unique: true },
+    delay_ms: {
+      type: Number,
+      required: true,
+      default: DEFAULT_DELAY_MS,
+      min: MIN_DELAY_MS,
+      max: MAX_DELAY_MS,
+    },
+    data_transfer: {
+      type: String,
+      required: true,
+      enum: DATA_TRANSFER_STATES,
+      default: "start",
+    },
   },
   {
     timestamps: { createdAt: "created_at", updatedAt: "updated_at" },

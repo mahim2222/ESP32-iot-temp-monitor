@@ -5,7 +5,9 @@ import {
   getLatestReading,
   type LatestReading,
 } from "../realtime/device-readings";
+import { MAX_DELAY_MS, MIN_DELAY_MS } from "../models/device.model";
 import { isDeviceOnline } from "../realtime/device-socket-store";
+import { sendToDevice } from "../realtime/device-ws";
 import {
   createDevice,
   deleteDevice,
@@ -13,9 +15,49 @@ import {
   getDeviceIdsForUser,
   isValidSensor,
   listDevicesForUser,
+  setDeviceDataTransfer,
+  setDeviceDelay,
   updateDeviceName,
   type DevicePublic,
 } from "../services/device.service";
+
+type DeviceCommand =
+  | { type: "delay"; value: number }
+  | { type: "data_transfer"; value: "start" | "stop" };
+
+function parseCommand(body: unknown): DeviceCommand | { error: string } {
+  if (!body || typeof body !== "object") {
+    return { error: "Command body must be an object" };
+  }
+  const b = body as { type?: unknown; value?: unknown };
+  if (b.type === "delay") {
+    if (typeof b.value !== "number" || !Number.isFinite(b.value)) {
+      return { error: "delay.value must be a number (milliseconds)" };
+    }
+    const ms = Math.round(b.value);
+    if (ms < MIN_DELAY_MS || ms > MAX_DELAY_MS) {
+      return {
+        error: `delay.value must be between ${MIN_DELAY_MS} and ${MAX_DELAY_MS} ms`,
+      };
+    }
+    return { type: "delay", value: ms };
+  }
+  if (b.type === "data_transfer") {
+    if (b.value !== "start" && b.value !== "stop") {
+      return { error: "data_transfer.value must be 'start' or 'stop'" };
+    }
+    return { type: "data_transfer", value: b.value };
+  }
+  return { error: "Unknown command type" };
+}
+
+async function persistCommand(deviceId: string, command: DeviceCommand): Promise<void> {
+  if (command.type === "delay") {
+    await setDeviceDelay(deviceId, command.value);
+  } else if (command.type === "data_transfer") {
+    await setDeviceDataTransfer(deviceId, command.value);
+  }
+}
 
 type DeviceWithLive = DevicePublic & {
   latest_reading: {
@@ -154,6 +196,45 @@ export async function getDeviceStatsHandler(req: AuthRequest, res: Response): Pr
     res.status(200).json({ total, online });
   } catch {
     res.status(500).json({ message: "Failed to load device stats" });
+  }
+}
+
+export async function sendCommandHandler(req: AuthRequest, res: Response): Promise<void> {
+  try {
+    const userId = req.userId;
+    if (!userId) {
+      res.status(401).json({ error: { code: 401, message: "Unauthorized" } });
+      return;
+    }
+    const id = String(req.params.id ?? "");
+    const device = await getDeviceForUser(userId, id);
+    if (!device) {
+      res.status(404).json({ message: "Device not found" });
+      return;
+    }
+
+    const parsed = parseCommand(req.body);
+    if ("error" in parsed) {
+      res.status(400).json({ message: parsed.error });
+      return;
+    }
+
+    if (!isDeviceOnline(id)) {
+      res.status(409).json({ message: "Device is offline" });
+      return;
+    }
+
+    const ok = sendToDevice(id, JSON.stringify(parsed));
+    if (!ok) {
+      res.status(409).json({ message: "Device is offline" });
+      return;
+    }
+
+    await persistCommand(id, parsed);
+
+    res.status(200).json({ ok: true, sent: parsed });
+  } catch {
+    res.status(500).json({ message: "Failed to send command" });
   }
 }
 

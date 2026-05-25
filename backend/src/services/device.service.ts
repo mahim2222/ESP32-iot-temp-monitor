@@ -1,6 +1,12 @@
 import crypto from "crypto";
 import mongoose from "mongoose";
-import { Device, DEVICE_SENSORS, type DeviceSensor } from "../models/device.model";
+import {
+  DEFAULT_DELAY_MS,
+  Device,
+  DEVICE_SENSORS,
+  type DataTransferState,
+  type DeviceSensor,
+} from "../models/device.model";
 
 export type DeviceStatus = "online" | "offline";
 
@@ -11,6 +17,8 @@ export type DevicePublic = {
   sensor: DeviceSensor;
   token: string;
   status: DeviceStatus;
+  delay_ms: number;
+  data_transfer: DataTransferState;
   created_at?: string;
   updated_at?: string;
 };
@@ -21,6 +29,8 @@ type LeanDeviceFields = {
   username: string;
   sensor: DeviceSensor;
   token: string;
+  delay_ms?: number;
+  data_transfer?: DataTransferState;
   created_at?: Date;
   updated_at?: Date;
 };
@@ -33,6 +43,8 @@ function toPublicDevice(doc: LeanDeviceFields): DevicePublic {
     sensor: doc.sensor,
     token: doc.token,
     status: "offline",
+    delay_ms: doc.delay_ms ?? DEFAULT_DELAY_MS,
+    data_transfer: doc.data_transfer ?? "start",
     created_at: doc.created_at ? new Date(doc.created_at).toISOString() : undefined,
     updated_at: doc.updated_at ? new Date(doc.updated_at).toISOString() : undefined,
   };
@@ -170,4 +182,17 @@ export async function findDeviceByToken(token: string): Promise<{
 export async function getDeviceIdsForUser(userId: string): Promise<string[]> {
   const docs = await Device.find({ userId }).select("_id").lean();
   return docs.map((d) => String((d as { _id: unknown })._id));
+}
+
+export async function setDeviceDelay(deviceId: string, delayMs: number): Promise<void> {
+  if (!isValidObjectId(deviceId)) return;
+  await Device.updateOne({ _id: deviceId }, { $set: { delay_ms: delayMs } });
+}
+
+export async function setDeviceDataTransfer(
+  deviceId: string,
+  state: DataTransferState
+): Promise<void> {
+  if (!isValidObjectId(deviceId)) return;
+  await Device.updateOne({ _id: deviceId }, { $set: { data_transfer: state } });
 }

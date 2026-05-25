@@ -4,7 +4,15 @@ import Link from "next/link";
 import { useRouter } from "next/router";
 import AuthCheck from "@/components/layout/auth-check";
 import Layout from "@/components/layout/layout";
-import { getDevice, type Device, type DeviceStatus } from "@/lib/devices-api";
+import {
+  DELAY_OPTIONS,
+  getDevice,
+  sendDeviceCommand,
+  type DataTransferState,
+  type Device,
+  type DeviceCommand,
+  type DeviceStatus,
+} from "@/lib/devices-api";
 import { useLiveStatus } from "@/lib/realtime";
 import type { NextPageWithLayout } from "../_app";
 
@@ -89,7 +97,16 @@ const DeviceDetailPage: NextPageWithLayout = () => {
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
+  const [delayMs, setDelayMs] = useState<number>(DELAY_OPTIONS[0].valueMs);
+  const [delayTouched, setDelayTouched] = useState(false);
+  const [pendingCommand, setPendingCommand] = useState<string | null>(null);
+  const [commandMessage, setCommandMessage] = useState<
+    { kind: "ok" | "error"; text: string } | null
+  >(null);
+
   const effectiveStatus: DeviceStatus | undefined = liveStatus ?? device?.status;
+  const isOnline = effectiveStatus === "online";
+  const dataTransfer: DataTransferState = device?.data_transfer ?? "start";
 
   const isMounted = useRef(true);
 
@@ -127,6 +144,11 @@ const DeviceDetailPage: NextPageWithLayout = () => {
   }, [router.isReady, load]);
 
   useEffect(() => {
+    if (!device || delayTouched) return;
+    setDelayMs(device.delay_ms);
+  }, [device, delayTouched]);
+
+  useEffect(() => {
     if (!router.isReady || !id) return;
     const t = setInterval(() => {
       void load({ silent: true });
@@ -142,6 +164,36 @@ const DeviceDetailPage: NextPageWithLayout = () => {
     } catch {
       setError("Could not copy token to clipboard");
     }
+  }
+
+  async function runCommand(key: string, command: DeviceCommand, okText: string) {
+    if (!id || pendingCommand) return;
+    setPendingCommand(key);
+    setCommandMessage(null);
+    try {
+      await sendDeviceCommand(id, command);
+      setCommandMessage({ kind: "ok", text: okText });
+      setDevice((prev) =>
+        prev
+          ? command.type === "delay"
+            ? { ...prev, delay_ms: command.value }
+            : { ...prev, data_transfer: command.value }
+          : prev
+      );
+      if (command.type === "delay") setDelayTouched(false);
+    } catch (err) {
+      setCommandMessage({ kind: "error", text: extractMessage(err, "Failed to send command") });
+    } finally {
+      setPendingCommand(null);
+      setTimeout(() => {
+        setCommandMessage((prev) => (prev?.kind === "ok" ? null : prev));
+      }, 2500);
+    }
+  }
+
+  function formatDelay(ms: number): string {
+    const match = DELAY_OPTIONS.find((opt) => opt.valueMs === ms);
+    return match ? `${match.label} (${ms} ms)` : `${ms} ms`;
   }
 
   return (
@@ -208,6 +260,154 @@ const DeviceDetailPage: NextPageWithLayout = () => {
           </div>
 
           <section className="rounded-2xl border border-slate-200 bg-white shadow-sm">
+            <div className="flex items-center justify-between border-b border-slate-200 px-6 py-4">
+              <h2 className="text-lg font-semibold text-slate-900">Controls</h2>
+              {!isOnline && (
+                <span className="text-xs text-slate-500">
+                  Device must be online to receive commands
+                </span>
+              )}
+            </div>
+            <div className="space-y-5 px-6 py-5">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+                <div className="flex-1">
+                  <label
+                    htmlFor="delay-select"
+                    className="block text-sm font-medium text-slate-700"
+                  >
+                    Reading interval
+                  </label>
+                  <select
+                    id="delay-select"
+                    value={delayMs}
+                    onChange={(e) => {
+                      setDelayTouched(true);
+                      setDelayMs(Number(e.target.value));
+                    }}
+                    disabled={!isOnline || pendingCommand !== null}
+                    className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-sm outline-none transition focus:border-indigo-400 focus:bg-white focus:ring-2 focus:ring-indigo-100 disabled:opacity-60"
+                  >
+                    {DELAY_OPTIONS.map((opt) => (
+                      <option key={opt.valueMs} value={opt.valueMs}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="mt-1 text-xs text-slate-500">
+                    Sent as <code className="rounded bg-slate-100 px-1 py-0.5">{delayMs}</code> ms.
+                    {device && (
+                      <>
+                        {" "}
+                        Currently applied:{" "}
+                        <span className="font-medium text-slate-700">
+                          {formatDelay(device.delay_ms)}
+                        </span>
+                      </>
+                    )}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  disabled={!isOnline || pendingCommand !== null}
+                  onClick={() =>
+                    void runCommand(
+                      "delay",
+                      { type: "delay", value: delayMs },
+                      `Delay set to ${delayMs} ms`
+                    )
+                  }
+                  className="rounded-xl bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-60"
+                >
+                  {pendingCommand === "delay" ? "Applying…" : "Apply delay"}
+                </button>
+              </div>
+
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+                <div className="flex-1">
+                  <div className="flex items-center gap-2">
+                    <p className="text-sm font-medium text-slate-700">Data transfer</p>
+                    <span
+                      className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${
+                        dataTransfer === "start"
+                          ? "bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-200"
+                          : "bg-slate-100 text-slate-600 ring-1 ring-inset ring-slate-200"
+                      }`}
+                    >
+                      {dataTransfer === "start" ? "Running" : "Stopped"}
+                    </span>
+                  </div>
+                  <p className="mt-1 text-xs text-slate-500">
+                    Start or stop the device from sending temperature and humidity readings.
+                  </p>
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    disabled={
+                      !isOnline || pendingCommand !== null || dataTransfer === "start"
+                    }
+                    onClick={() =>
+                      void runCommand(
+                        "start",
+                        { type: "data_transfer", value: "start" },
+                        "Data transfer started"
+                      )
+                    }
+                    className={`rounded-xl px-4 py-2.5 text-sm font-semibold transition disabled:opacity-60 ${
+                      dataTransfer === "start"
+                        ? "border border-emerald-200 bg-emerald-50 text-emerald-700"
+                        : "bg-emerald-600 text-white hover:bg-emerald-500"
+                    }`}
+                  >
+                    {pendingCommand === "start"
+                      ? "Starting…"
+                      : dataTransfer === "start"
+                        ? "Started"
+                        : "Start"}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={
+                      !isOnline || pendingCommand !== null || dataTransfer === "stop"
+                    }
+                    onClick={() =>
+                      void runCommand(
+                        "stop",
+                        { type: "data_transfer", value: "stop" },
+                        "Data transfer stopped"
+                      )
+                    }
+                    className={`rounded-xl px-4 py-2.5 text-sm font-semibold transition disabled:opacity-60 ${
+                      dataTransfer === "stop"
+                        ? "border border-rose-200 bg-rose-50 text-rose-700"
+                        : "border border-rose-200 bg-white text-rose-600 hover:bg-rose-50"
+                    }`}
+                  >
+                    {pendingCommand === "stop"
+                      ? "Stopping…"
+                      : dataTransfer === "stop"
+                        ? "Stopped"
+                        : "Stop"}
+                  </button>
+                </div>
+              </div>
+
+              {commandMessage && (
+                <p
+                  role="status"
+                  className={`rounded-lg px-3 py-2 text-sm ${
+                    commandMessage.kind === "ok"
+                      ? "bg-emerald-50 text-emerald-700"
+                      : "bg-rose-50 text-rose-700"
+                  }`}
+                >
+                  {commandMessage.text}
+                </p>
+              )}
+            </div>
+          </section>
+
+          <section className="rounded-2xl border border-slate-200 bg-white shadow-sm">
             <div className="border-b border-slate-200 px-6 py-4">
               <h2 className="text-lg font-semibold text-slate-900">Details</h2>
             </div>
@@ -218,6 +418,11 @@ const DeviceDetailPage: NextPageWithLayout = () => {
               <DetailRow
                 label="Status"
                 value={effectiveStatus === "online" ? "Online" : "Offline"}
+              />
+              <DetailRow label="Reading interval" value={formatDelay(device.delay_ms)} />
+              <DetailRow
+                label="Data transfer"
+                value={device.data_transfer === "start" ? "Running" : "Stopped"}
               />
               <DetailRow
                 label="Last reading"
