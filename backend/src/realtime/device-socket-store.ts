@@ -1,9 +1,11 @@
 import type { WebSocket } from "ws";
+import type { LoggingState } from "../models/device.model";
 
 export type DeviceSocket = WebSocket & {
   deviceId?: string;
   userId?: string;
   username?: string;
+  logging?: LoggingState;
   isAlive?: boolean;
 };
 

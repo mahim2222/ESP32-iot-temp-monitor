@@ -2,7 +2,7 @@ import type { IncomingMessage } from "http";
 import type { Duplex } from "stream";
 import { URL } from "url";
 import { WebSocket, WebSocketServer, type RawData } from "ws";
-import { findDeviceByToken } from "../services/device.service";
+import { findDeviceByToken, saveDeviceReading } from "../services/device.service";
 import { notifyDeviceStatus } from "./app-ws";
 import { setLatestReading } from "./device-readings";
 import { deviceSockets, type DeviceSocket } from "./device-socket-store";
@@ -19,6 +19,14 @@ export function sendToDevice(deviceId: string, data: string | Buffer): boolean {
   if (!ws || ws.readyState !== WebSocket.OPEN) return false;
   ws.send(data);
   return true;
+}
+
+export function setDeviceLoggingOnSocket(
+  deviceId: string,
+  logging: "on" | "off"
+): void {
+  const ws = deviceSockets.get(deviceId);
+  if (ws) ws.logging = logging;
 }
 
 function rawDataToString(data: RawData): string {
@@ -43,7 +51,8 @@ function safeSend(ws: WebSocket, payload: object): void {
 
 function handleDeviceMessage(ws: DeviceSocket, data: RawData): void {
   const deviceId = ws.deviceId;
-  if (!deviceId) return;
+  const userId = ws.userId;
+  if (!deviceId || !userId) return;
 
   const text = rawDataToString(data).trim();
   if (!text) return;
@@ -73,11 +82,22 @@ function handleDeviceMessage(ws: DeviceSocket, data: RawData): void {
     return;
   }
 
+  const ts = new Date();
   setLatestReading(deviceId, {
     temperature: msg.temperature,
     humidity: msg.humidity,
-    ts: Date.now(),
+    ts: ts.getTime(),
   });
+
+  if (ws.logging === "on") {
+    void saveDeviceReading(deviceId, userId, {
+      temperature: msg.temperature,
+      humidity: msg.humidity,
+      ts,
+    }).catch((err) => {
+      console.error(`[device-ws] failed to save reading for ${deviceId}:`, err);
+    });
+  }
 }
 
 function tokenFromUrl(reqUrl: string | undefined): string | null {
@@ -98,11 +118,12 @@ export function createDeviceWss() {
     const ws = rawWs as DeviceSocket;
     const token = tokenFromUrl(req.url);
     if (!token) {
+      console.warn(`[device-ws] missing token from ${req.socket.remoteAddress ?? "?"} url=${req.url}`);
       ws.close(closeCodes.policyViolation, "missing token");
       return;
     }
 
-    let device: { id: string; userId: string; username: string } | null;
+    let device: { id: string; userId: string; username: string; logging: "on" | "off" } | null;
     try {
       device = await findDeviceByToken(token);
     } catch (err) {
@@ -111,6 +132,9 @@ export function createDeviceWss() {
       return;
     }
     if (!device) {
+      console.warn(
+        `[device-ws] invalid token from ${req.socket.remoteAddress ?? "?"} (token length=${token.length})`
+      );
       ws.close(closeCodes.policyViolation, "invalid token");
       return;
     }
@@ -127,6 +151,7 @@ export function createDeviceWss() {
     ws.deviceId = device.id;
     ws.userId = device.userId;
     ws.username = device.username;
+    ws.logging = device.logging;
     ws.isAlive = true;
     deviceSockets.set(device.id, ws);
 

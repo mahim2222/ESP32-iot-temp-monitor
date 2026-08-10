@@ -3,6 +3,7 @@ import { axiosInstance } from "@/utils/axios-instance";
 export type DeviceSensor = "DHT11";
 export type DeviceStatus = "online" | "offline";
 export type DataTransferState = "start" | "stop";
+export type LoggingState = "on" | "off";
 
 export type LatestReading = {
   temperature: number;
@@ -19,9 +20,17 @@ export type Device = {
   status: DeviceStatus;
   delay_ms: number;
   data_transfer: DataTransferState;
+  logging: LoggingState;
   latest_reading: LatestReading | null;
   created_at?: string;
   updated_at?: string;
+};
+
+export type LoggedReading = {
+  id: string;
+  temperature: number;
+  humidity: number;
+  ts: string;
 };
 
 export const DEVICE_SENSOR_OPTIONS: { value: DeviceSensor; label: string }[] = [
@@ -84,4 +93,28 @@ export async function getDeviceStats(): Promise<DeviceStats> {
 
 export async function sendDeviceCommand(id: string, command: DeviceCommand): Promise<void> {
   await axiosInstance.post(`/devices/${id}/command`, command);
+}
+
+export async function setDeviceLogging(
+  id: string,
+  state: LoggingState
+): Promise<Device> {
+  const res = await axiosInstance.post<{ device: Device }>(`/devices/${id}/logging`, {
+    state,
+  });
+  return res.data.device;
+}
+
+export async function getDeviceReadings(
+  id: string,
+  options: { limit?: number; sinceMs?: number } = {}
+): Promise<LoggedReading[]> {
+  const params: Record<string, number> = {};
+  if (options.limit) params.limit = options.limit;
+  if (options.sinceMs) params.since = options.sinceMs;
+  const res = await axiosInstance.get<{ readings: LoggedReading[] }>(
+    `/devices/${id}/readings`,
+    { params }
+  );
+  return res.data.readings ?? [];
 }

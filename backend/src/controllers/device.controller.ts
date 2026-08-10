@@ -7,16 +7,18 @@ import {
 } from "../realtime/device-readings";
 import { MAX_DELAY_MS, MIN_DELAY_MS } from "../models/device.model";
 import { isDeviceOnline } from "../realtime/device-socket-store";
-import { sendToDevice } from "../realtime/device-ws";
+import { sendToDevice, setDeviceLoggingOnSocket } from "../realtime/device-ws";
 import {
   createDevice,
   deleteDevice,
   getDeviceForUser,
   getDeviceIdsForUser,
+  getDeviceReadings,
   isValidSensor,
   listDevicesForUser,
   setDeviceDataTransfer,
   setDeviceDelay,
+  setDeviceLogging,
   updateDeviceName,
   type DevicePublic,
 } from "../services/device.service";
@@ -254,5 +256,58 @@ export async function deleteDeviceHandler(req: AuthRequest, res: Response): Prom
     const err = e as Error & { status?: number };
     const status = typeof err.status === "number" ? err.status : 500;
     res.status(status).json({ message: err.message || "Failed to delete device" });
+  }
+}
+
+export async function setDeviceLoggingHandler(
+  req: AuthRequest,
+  res: Response
+): Promise<void> {
+  try {
+    const userId = req.userId;
+    if (!userId) {
+      res.status(401).json({ error: { code: 401, message: "Unauthorized" } });
+      return;
+    }
+    const id = String(req.params.id ?? "");
+    const state = (req.body ?? {}).state;
+    if (state !== "on" && state !== "off") {
+      res.status(400).json({ message: "state must be 'on' or 'off'" });
+      return;
+    }
+
+    const device = await setDeviceLogging(userId, id, state);
+    setDeviceLoggingOnSocket(id, state);
+
+    res.status(200).json({ device: attachLiveFields(device) });
+  } catch (e: unknown) {
+    const err = e as Error & { status?: number };
+    const status = typeof err.status === "number" ? err.status : 500;
+    res.status(status).json({ message: err.message || "Failed to update logging" });
+  }
+}
+
+export async function getDeviceReadingsHandler(
+  req: AuthRequest,
+  res: Response
+): Promise<void> {
+  try {
+    const userId = req.userId;
+    if (!userId) {
+      res.status(401).json({ error: { code: 401, message: "Unauthorized" } });
+      return;
+    }
+    const id = String(req.params.id ?? "");
+
+    const limitRaw = Number(req.query.limit);
+    const sinceRaw = Number(req.query.since);
+
+    const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.floor(limitRaw) : 500;
+    const sinceMs = Number.isFinite(sinceRaw) && sinceRaw > 0 ? sinceRaw : undefined;
+
+    const readings = await getDeviceReadings(userId, id, { limit, sinceMs });
+    res.status(200).json({ readings });
+  } catch {
+    res.status(500).json({ message: "Failed to load readings" });
   }
 }

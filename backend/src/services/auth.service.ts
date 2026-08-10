@@ -184,3 +184,69 @@ export async function loginUser(email: string, password: string): Promise<AuthRe
   };
 }
 
+const MAX_AVATAR_CHARS = 400_000; // ~300KB image as data URL
+
+export async function updateUserProfile(
+  userId: string,
+  input: { name?: string; avatar?: string }
+): Promise<{ user: AuthUserPublic; profile: AuthProfilePublic }> {
+  if (input.name !== undefined) {
+    const trimmed = input.name.trim();
+    if (!trimmed) {
+      const err = new Error("Name is required") as Error & { status: number };
+      err.status = 400;
+      throw err;
+    }
+    if (trimmed.length > 80) {
+      const err = new Error("Name must be at most 80 characters") as Error & { status: number };
+      err.status = 400;
+      throw err;
+    }
+    const updated = await User.findByIdAndUpdate(
+      userId,
+      { $set: { name: trimmed } },
+      { new: true }
+    )
+      .select("_id")
+      .lean();
+    if (!updated) {
+      const err = new Error("User not found") as Error & { status: number };
+      err.status = 404;
+      throw err;
+    }
+  }
+
+  if (input.avatar !== undefined) {
+    const avatar = typeof input.avatar === "string" ? input.avatar.trim() : "";
+    if (avatar) {
+      const isDataUrl = /^data:image\/(jpeg|jpg|png|webp|gif);base64,/i.test(avatar);
+      const isHttpUrl = /^https?:\/\//i.test(avatar);
+      if (!isDataUrl && !isHttpUrl) {
+        const err = new Error(
+          "Avatar must be an image data URL or http(s) URL"
+        ) as Error & { status: number };
+        err.status = 400;
+        throw err;
+      }
+      if (avatar.length > MAX_AVATAR_CHARS) {
+        const err = new Error(
+          "Avatar image is too large. Please use a smaller image."
+        ) as Error & { status: number };
+        err.status = 400;
+        throw err;
+      }
+    }
+
+    await ensureProfile(userId);
+    await Profile.findOneAndUpdate({ userId }, { $set: { avatar } }, { new: true });
+  }
+
+  const payload = await getAuthPayloadByUserId(userId);
+  if (!payload) {
+    const err = new Error("User not found") as Error & { status: number };
+    err.status = 404;
+    throw err;
+  }
+  return payload;
+}
+

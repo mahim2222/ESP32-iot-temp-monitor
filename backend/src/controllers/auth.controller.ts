@@ -1,6 +1,11 @@
 import type { Request, Response } from "express";
 import type { AuthRequest } from "../middleware/auth.middleware";
-import { getAuthPayloadByUserId, loginUser, registerUser } from "../services/auth.service";
+import {
+  getAuthPayloadByUserId,
+  loginUser,
+  registerUser,
+  updateUserProfile,
+} from "../services/auth.service";
 
 function isNonEmptyString(v: unknown): v is string {
   return typeof v === "string" && v.trim().length > 0;
@@ -72,5 +77,44 @@ export async function getMe(req: AuthRequest, res: Response): Promise<void> {
     res.status(200).json({ user: payload.user, profile: payload.profile });
   } catch {
     res.status(500).json({ message: "Failed to load user" });
+  }
+}
+
+export async function updateProfile(req: AuthRequest, res: Response): Promise<void> {
+  try {
+    const userId = req.userId;
+    if (!userId) {
+      res.status(401).json({ error: { code: 401, message: "Unauthorized" } });
+      return;
+    }
+
+    const body = req.body ?? {};
+    const hasName = Object.prototype.hasOwnProperty.call(body, "name");
+    const hasAvatar = Object.prototype.hasOwnProperty.call(body, "avatar");
+
+    if (!hasName && !hasAvatar) {
+      res.status(400).json({ message: "Provide name and/or avatar to update" });
+      return;
+    }
+
+    if (hasName && typeof body.name !== "string") {
+      res.status(400).json({ message: "Name must be a string" });
+      return;
+    }
+    if (hasAvatar && typeof body.avatar !== "string") {
+      res.status(400).json({ message: "Avatar must be a string" });
+      return;
+    }
+
+    const payload = await updateUserProfile(userId, {
+      name: hasName ? body.name : undefined,
+      avatar: hasAvatar ? body.avatar : undefined,
+    });
+
+    res.status(200).json(payload);
+  } catch (e: unknown) {
+    const err = e as Error & { status?: number };
+    const status = typeof err.status === "number" ? err.status : 500;
+    res.status(status).json({ message: err.message || "Failed to update profile" });
   }
 }

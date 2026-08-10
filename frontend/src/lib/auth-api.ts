@@ -1,3 +1,5 @@
+import { axiosInstance } from "@/utils/axios-instance";
+
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000";
 
 export type AuthResponse = {
@@ -61,4 +63,17 @@ export function persistAuth(data: AuthResponse): void {
   localStorage.setItem("token", data.token);
   localStorage.setItem("user", JSON.stringify(data.user));
   localStorage.setItem("profile", JSON.stringify(data.profile));
+}
+
+export type ProfileUpdateResponse = {
+  user: AuthResponse["user"];
+  profile: AuthResponse["profile"];
+};
+
+export async function updateProfileRequest(input: {
+  name?: string;
+  avatar?: string;
+}): Promise<ProfileUpdateResponse> {
+  const res = await axiosInstance.patch<ProfileUpdateResponse>("/auth/profile", input);
+  return res.data;
 }

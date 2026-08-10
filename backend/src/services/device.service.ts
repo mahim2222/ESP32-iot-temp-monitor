@@ -1,11 +1,13 @@
 import crypto from "crypto";
 import mongoose from "mongoose";
+import { DeviceReading } from "../models/device-reading.model";
 import {
   DEFAULT_DELAY_MS,
   Device,
   DEVICE_SENSORS,
   type DataTransferState,
   type DeviceSensor,
+  type LoggingState,
 } from "../models/device.model";
 
 export type DeviceStatus = "online" | "offline";
@@ -19,6 +21,7 @@ export type DevicePublic = {
   status: DeviceStatus;
   delay_ms: number;
   data_transfer: DataTransferState;
+  logging: LoggingState;
   created_at?: string;
   updated_at?: string;
 };
@@ -31,6 +34,7 @@ type LeanDeviceFields = {
   token: string;
   delay_ms?: number;
   data_transfer?: DataTransferState;
+  logging?: LoggingState;
   created_at?: Date;
   updated_at?: Date;
 };
@@ -45,6 +49,7 @@ function toPublicDevice(doc: LeanDeviceFields): DevicePublic {
     status: "offline",
     delay_ms: doc.delay_ms ?? DEFAULT_DELAY_MS,
     data_transfer: doc.data_transfer ?? "start",
+    logging: doc.logging ?? "off",
     created_at: doc.created_at ? new Date(doc.created_at).toISOString() : undefined,
     updated_at: doc.updated_at ? new Date(doc.updated_at).toISOString() : undefined,
   };
@@ -162,20 +167,25 @@ export async function deleteDevice(userId: string, deviceId: string): Promise<vo
   if (result.deletedCount === 0) {
     throw notFound();
   }
+  await DeviceReading.deleteMany({ deviceId });
 }
 
 export async function findDeviceByToken(token: string): Promise<{
   id: string;
   userId: string;
   username: string;
+  logging: LoggingState;
 } | null> {
   if (!token) return null;
-  const doc = await Device.findOne({ token }).select("_id userId username").lean();
+  const doc = await Device.findOne({ token })
+    .select("_id userId username logging")
+    .lean();
   if (!doc) return null;
   return {
     id: String(doc._id),
     userId: String((doc as { userId: unknown }).userId),
     username: doc.username,
+    logging: ((doc as { logging?: LoggingState }).logging ?? "off") as LoggingState,
   };
 }
 
@@ -195,4 +205,76 @@ export async function setDeviceDataTransfer(
 ): Promise<void> {
   if (!isValidObjectId(deviceId)) return;
   await Device.updateOne({ _id: deviceId }, { $set: { data_transfer: state } });
+}
+
+export async function setDeviceLogging(
+  userId: string,
+  deviceId: string,
+  state: LoggingState
+): Promise<DevicePublic> {
+  if (!isValidObjectId(deviceId)) {
+    throw notFound();
+  }
+  const updated = await Device.findOneAndUpdate(
+    { _id: deviceId, userId },
+    { $set: { logging: state } },
+    { new: true }
+  ).lean();
+  if (!updated) {
+    throw notFound();
+  }
+  return toPublicDevice(updated as LeanDeviceFields);
+}
+
+export async function saveDeviceReading(
+  deviceId: string,
+  userId: string,
+  data: { temperature: number; humidity: number; ts: Date }
+): Promise<void> {
+  await DeviceReading.create({
+    deviceId,
+    userId,
+    temperature: data.temperature,
+    humidity: data.humidity,
+    ts: data.ts,
+  });
+}
+
+export type LoggedReading = {
+  id: string;
+  temperature: number;
+  humidity: number;
+  ts: string;
+};
+
+export async function getDeviceReadings(
+  userId: string,
+  deviceId: string,
+  options: { limit?: number; sinceMs?: number } = {}
+): Promise<LoggedReading[]> {
+  if (!isValidObjectId(deviceId)) return [];
+  const device = await Device.findOne({ _id: deviceId, userId })
+    .select("_id")
+    .lean();
+  if (!device) return [];
+
+  const limit = Math.max(1, Math.min(options.limit ?? 500, 5000));
+  const filter: Record<string, unknown> = { deviceId };
+  if (options.sinceMs && Number.isFinite(options.sinceMs)) {
+    filter.ts = { $gte: new Date(options.sinceMs) };
+  }
+
+  const docs = await DeviceReading.find(filter)
+    .sort({ ts: -1 })
+    .limit(limit)
+    .lean();
+
+  return docs
+    .map((d) => ({
+      id: String((d as { _id: unknown })._id),
+      temperature: d.temperature,
+      humidity: d.humidity,
+      ts: new Date(d.ts).toISOString(),
+    }))
+    .reverse();
 }

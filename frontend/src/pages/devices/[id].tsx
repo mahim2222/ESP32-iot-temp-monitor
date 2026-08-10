@@ -1,5 +1,6 @@
 import type { ReactElement } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useRouter } from "next/router";
 import AuthCheck from "@/components/layout/auth-check";
@@ -7,16 +8,26 @@ import Layout from "@/components/layout/layout";
 import {
   DELAY_OPTIONS,
   getDevice,
+  getDeviceReadings,
   sendDeviceCommand,
+  setDeviceLogging,
   type DataTransferState,
   type Device,
   type DeviceCommand,
   type DeviceStatus,
+  type LoggedReading,
+  type LoggingState,
 } from "@/lib/devices-api";
 import { useLiveStatus } from "@/lib/realtime";
 import type { NextPageWithLayout } from "../_app";
 
+const ReadingsChart = dynamic(
+  () => import("@/components/devices/readings-chart"),
+  { ssr: false }
+);
+
 const POLL_INTERVAL_MS = 5000;
+const READINGS_LIMIT = 500;
 
 function formatDate(iso?: string): string {
   if (!iso) return "—";
@@ -95,7 +106,7 @@ const DeviceDetailPage: NextPageWithLayout = () => {
   const [device, setDevice] = useState<Device | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
+  const [copied, setCopied] = useState<"id" | "token" | null>(null);
 
   const [delayMs, setDelayMs] = useState<number>(DELAY_OPTIONS[0].valueMs);
   const [delayTouched, setDelayTouched] = useState(false);
@@ -104,9 +115,17 @@ const DeviceDetailPage: NextPageWithLayout = () => {
     { kind: "ok" | "error"; text: string } | null
   >(null);
 
+  const [readings, setReadings] = useState<LoggedReading[]>([]);
+  const [readingsLoading, setReadingsLoading] = useState(true);
+  const [loggingPending, setLoggingPending] = useState(false);
+  const [loggingMessage, setLoggingMessage] = useState<
+    { kind: "ok" | "error"; text: string } | null
+  >(null);
+
   const effectiveStatus: DeviceStatus | undefined = liveStatus ?? device?.status;
   const isOnline = effectiveStatus === "online";
   const dataTransfer: DataTransferState = device?.data_transfer ?? "start";
+  const loggingState: LoggingState = device?.logging ?? "off";
 
   const isMounted = useRef(true);
 
@@ -156,13 +175,75 @@ const DeviceDetailPage: NextPageWithLayout = () => {
     return () => clearInterval(t);
   }, [router.isReady, id, load]);
 
-  async function copyToken(token: string) {
+  const loadReadings = useCallback(
+    async (opts?: { silent?: boolean }) => {
+      if (!id) return;
+      if (!opts?.silent) setReadingsLoading(true);
+      try {
+        const list = await getDeviceReadings(id, { limit: READINGS_LIMIT });
+        if (!isMounted.current) return;
+        setReadings(list);
+      } catch {
+        // silent failure for chart — keep last data
+      } finally {
+        if (isMounted.current && !opts?.silent) setReadingsLoading(false);
+      }
+    },
+    [id]
+  );
+
+  useEffect(() => {
+    if (!router.isReady || !id) return;
+    void loadReadings();
+  }, [router.isReady, id, loadReadings]);
+
+  useEffect(() => {
+    if (!router.isReady || !id) return;
+    if (loggingState !== "on") return;
+    const t = setInterval(() => {
+      void loadReadings({ silent: true });
+    }, POLL_INTERVAL_MS);
+    return () => clearInterval(t);
+  }, [router.isReady, id, loggingState, loadReadings]);
+
+  async function toggleLogging(next: LoggingState) {
+    if (!id || loggingPending) return;
+    setLoggingPending(true);
+    setLoggingMessage(null);
     try {
-      await navigator.clipboard.writeText(token);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      const updated = await setDeviceLogging(id, next);
+      setDevice(updated);
+      setLoggingMessage({
+        kind: "ok",
+        text: next === "on" ? "Logging started" : "Logging stopped",
+      });
+      if (next === "on") {
+        void loadReadings({ silent: true });
+      }
+    } catch (err) {
+      setLoggingMessage({
+        kind: "error",
+        text: extractMessage(err, "Failed to update logging"),
+      });
+    } finally {
+      setLoggingPending(false);
+      setTimeout(() => {
+        setLoggingMessage((prev) => (prev?.kind === "ok" ? null : prev));
+      }, 2500);
+    }
+  }
+
+  async function copyText(value: string, field: "id" | "token") {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(field);
+      setTimeout(() => setCopied(null), 2000);
     } catch {
-      setError("Could not copy token to clipboard");
+      setError(
+        field === "id"
+          ? "Could not copy device ID to clipboard"
+          : "Could not copy token to clipboard"
+      );
     }
   }
 
@@ -408,11 +489,123 @@ const DeviceDetailPage: NextPageWithLayout = () => {
           </section>
 
           <section className="rounded-2xl border border-slate-200 bg-white shadow-sm">
+            <div className="flex items-center justify-between gap-3 border-b border-slate-200 px-6 py-4">
+              <div className="flex items-center gap-2">
+                <h2 className="text-lg font-semibold text-slate-900">Data log</h2>
+                <span
+                  className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ${
+                    loggingState === "on"
+                      ? "bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-200"
+                      : "bg-slate-100 text-slate-600 ring-1 ring-inset ring-slate-200"
+                  }`}
+                >
+                  <span
+                    className={`h-1.5 w-1.5 rounded-full ${
+                      loggingState === "on" ? "bg-emerald-500 animate-pulse" : "bg-slate-400"
+                    }`}
+                  />
+                  {loggingState === "on" ? "Recording" : "Idle"}
+                </span>
+              </div>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  disabled={loggingPending || loggingState === "on"}
+                  onClick={() => void toggleLogging("on")}
+                  className={`rounded-xl px-4 py-2 text-sm font-semibold transition disabled:opacity-60 ${
+                    loggingState === "on"
+                      ? "border border-emerald-200 bg-emerald-50 text-emerald-700"
+                      : "bg-emerald-600 text-white hover:bg-emerald-500"
+                  }`}
+                >
+                  {loggingPending && loggingState !== "on"
+                    ? "Starting…"
+                    : loggingState === "on"
+                      ? "Started"
+                      : "Start log"}
+                </button>
+                <button
+                  type="button"
+                  disabled={loggingPending || loggingState === "off"}
+                  onClick={() => void toggleLogging("off")}
+                  className={`rounded-xl px-4 py-2 text-sm font-semibold transition disabled:opacity-60 ${
+                    loggingState === "off"
+                      ? "border border-rose-200 bg-rose-50 text-rose-700"
+                      : "border border-rose-200 bg-white text-rose-600 hover:bg-rose-50"
+                  }`}
+                >
+                  {loggingPending && loggingState !== "off"
+                    ? "Stopping…"
+                    : loggingState === "off"
+                      ? "Stopped"
+                      : "Stop log"}
+                </button>
+              </div>
+            </div>
+            <div className="space-y-4 px-6 py-5">
+              <div className="flex flex-wrap items-center justify-between gap-3 text-sm text-slate-500">
+                <p>
+                  {loggingState === "on"
+                    ? "Every reading received from this device is being saved to the database."
+                    : "Logging is paused. Start it to begin recording temperature and humidity data."}
+                </p>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-slate-500">
+                    {readings.length} point{readings.length === 1 ? "" : "s"}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => void loadReadings()}
+                    className="rounded-lg border border-slate-200 px-3 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100"
+                  >
+                    Refresh
+                  </button>
+                </div>
+              </div>
+
+              {readingsLoading && readings.length === 0 ? (
+                <div className="flex h-72 items-center justify-center rounded-xl border border-dashed border-slate-200 bg-slate-50/60 text-sm text-slate-500">
+                  Loading chart…
+                </div>
+              ) : (
+                <ReadingsChart readings={readings} />
+              )}
+
+              {loggingMessage && (
+                <p
+                  role="status"
+                  className={`rounded-lg px-3 py-2 text-sm ${
+                    loggingMessage.kind === "ok"
+                      ? "bg-emerald-50 text-emerald-700"
+                      : "bg-rose-50 text-rose-700"
+                  }`}
+                >
+                  {loggingMessage.text}
+                </p>
+              )}
+            </div>
+          </section>
+
+          <section className="rounded-2xl border border-slate-200 bg-white shadow-sm">
             <div className="border-b border-slate-200 px-6 py-4">
               <h2 className="text-lg font-semibold text-slate-900">Details</h2>
             </div>
             <dl className="divide-y divide-slate-100">
               <DetailRow label="Name" value={device.name} />
+              <DetailRow
+                label="Device ID"
+                value={device.id}
+                mono
+                action={
+                  <button
+                    type="button"
+                    onClick={() => void copyText(device.id, "id")}
+                    className="shrink-0 rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100"
+                  >
+                    {copied === "id" ? "Copied" : "Copy"}
+                  </button>
+                }
+              />
               <DetailRow label="Username" value={device.username} mono />
               <DetailRow label="Sensor" value={device.sensor} />
               <DetailRow
@@ -423,6 +616,10 @@ const DeviceDetailPage: NextPageWithLayout = () => {
               <DetailRow
                 label="Data transfer"
                 value={device.data_transfer === "start" ? "Running" : "Stopped"}
+              />
+              <DetailRow
+                label="Logging"
+                value={device.logging === "on" ? "Recording" : "Idle"}
               />
               <DetailRow
                 label="Last reading"
@@ -439,10 +636,10 @@ const DeviceDetailPage: NextPageWithLayout = () => {
                 action={
                   <button
                     type="button"
-                    onClick={() => void copyToken(device.token)}
+                    onClick={() => void copyText(device.token, "token")}
                     className="shrink-0 rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100"
                   >
-                    {copied ? "Copied" : "Copy"}
+                    {copied === "token" ? "Copied" : "Copy"}
                   </button>
                 }
               />

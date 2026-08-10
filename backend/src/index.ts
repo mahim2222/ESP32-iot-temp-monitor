@@ -20,7 +20,7 @@ app.use(
     credentials: true,
   })
 );
-app.use(express.json());
+app.use(express.json({ limit: "600kb" }));
 
 app.get("/", (_req: Request, res: Response) => {
   res.send("Hello, Express server is running!");
@@ -46,14 +46,19 @@ async function bootstrap(): Promise<void> {
     try {
       pathname = new URL(req.url ?? "/", "http://localhost").pathname;
     } catch {
+      console.warn("[ws] bad upgrade URL:", req.url);
       socket.destroy();
       return;
     }
+
+    console.log(`[ws] upgrade request: ${pathname} from ${req.socket.remoteAddress ?? "?"}`);
+
     if (pathname === "/socket") {
       deviceWs.handleUpgrade(req, socket, head);
     } else if (pathname === "/app") {
       appWs.handleUpgrade(req, socket, head);
     } else {
+      console.warn(`[ws] rejecting unknown path: ${pathname}`);
       socket.destroy();
     }
   });
